@@ -1,0 +1,21 @@
+{
+  // Cloudflare Workers の設定
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "yamame-app",
+  "main": "./src/worker/index.ts",
+  "compatibility_date": "2026-06-01",
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "yamame-db",
+      // ↓ Cloudflare で D1 を作成したあとに表示される ID に置き換える
+      "database_id": "REPLACE_WITH_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "observability": { "enabled": true }
+}
