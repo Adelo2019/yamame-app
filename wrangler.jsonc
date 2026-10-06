@@ -12,8 +12,7 @@
     {
       "binding": "DB",
       "database_name": "yamame-db",
-      // ↓ Cloudflare で D1 を作成したあとに表示される ID に置き換える
-      "database_id": "REPLACE_WITH_DATABASE_ID",
+      "database_id": "830a8229-1647-45e3-b3de-8b4e9020b758",
       "migrations_dir": "migrations"
     }
   ],
