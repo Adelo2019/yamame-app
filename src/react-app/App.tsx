@@ -1,145 +1,96 @@
-// Phase 1: DB接続と初期データの確認画面
-// Phase 2以降でここを「今日の記録」「ダッシュボード」に置き換えていく
-import { useEffect, useState, type ReactNode } from 'react';
+// アプリ全体: ログイン → 記録者名 → 画面切替(今日の記録 / 導入登録 / 確認)
+import { useEffect, useState, type FormEvent } from 'react';
+import { api, getRecorder, setRecorder, setUnauthorizedHandler } from './api';
+import { Button, ErrorBox } from './ui';
+import Today from './pages/Today';
+import Intake from './pages/Intake';
+import Status from './pages/Status';
 
-type Health = { ok: boolean; today: string; tables: number };
-type Pond = {
-  id: number; code: string; name: string; siteName: string; capacityG: number;
-  count: number; biomassG: number; utilizationPct: number; rateBp: number | null; recommendedFeedG: number | null;
-};
-type Lot = {
-  id: number; code: string; name: string; species_name: string; source_type: string;
-  purchase_date: string; purchase_count: number; purchase_avg_g: number;
-  unit_price_yen: number; total_price_yen: number; status: string;
-};
-type Settings = {
-  settings: { key: string; value: string; note: string }[];
-  feedPrices: { name: string; price_per_kg_yen: number; effective_from: string }[];
-  feedingRules: { species_name: string; stage: string; rate_bp: number; effective_from: string; note: string }[];
-  growthAssumptions: { species_name: string; sgr_bp: number; note: string }[];
-};
-
-async function getJson<T>(url: string): Promise<T> {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${url} ${r.status}`);
-  return r.json() as Promise<T>;
-}
-
-const kg = (g: number) => (g / 1000).toLocaleString('ja-JP', { maximumFractionDigits: 1 });
-const pct = (bp: number) => (bp / 100).toFixed(2).replace(/\.?0+$/, '');
-const stageLabel: Record<string, string> = { freshwater: '淡水', seawater: '海水' };
+type Tab = 'today' | 'intake' | 'status';
+type Auth = 'checking' | 'loggedOut' | 'loggedIn' | 'notConfigured';
 
 export default function App() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [ponds, setPonds] = useState<Pond[]>([]);
-  const [lots, setLots] = useState<Lot[]>([]);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [auth, setAuth] = useState<Auth>('checking');
+  const [recorder, setRecorderState] = useState(getRecorder());
+  const [tab, setTab] = useState<Tab>('today');
 
   useEffect(() => {
-    Promise.all([
-      getJson<Health>('/api/health'),
-      getJson<{ ponds: Pond[] }>('/api/ponds'),
-      getJson<Lot[]>('/api/lots'),
-      getJson<Settings>('/api/settings'),
-    ])
-      .then(([h, p, l, s]) => { setHealth(h); setPonds(p.ponds); setLots(l); setSettings(s); })
-      .catch((e) => setError(String(e)));
+    setUnauthorizedHandler(() => setAuth('loggedOut'));
+    api<{ loggedIn: boolean; configured: boolean }>('/api/auth/me')
+      .then((r) => setAuth(!r.configured ? 'notConfigured' : r.loggedIn ? 'loggedIn' : 'loggedOut'))
+      .catch(() => setAuth('loggedOut'));
   }, []);
 
-  const totalCapacity = ponds.reduce((a, p) => a + p.capacityG, 0);
-
   return (
-    <div className="mx-auto max-w-xl px-4 pb-16">
+    <div className="mx-auto min-h-screen max-w-xl px-4 pb-24">
       <header className="sticky top-0 z-10 -mx-4 mb-4 bg-[#0f3d3e] px-4 py-3 text-white">
         <h1 className="text-lg font-bold">ヤマメ養殖管理</h1>
-        <p className="text-xs opacity-80">Phase 1 ・ 接続確認</p>
+        {auth === 'loggedIn' && recorder && <p className="text-xs opacity-80">記録者：{recorder}</p>}
       </header>
 
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800">
-          読み込みに失敗しました：{error}
-        </div>
+      {auth === 'checking' && <p className="text-sm text-stone-500">確認中…</p>}
+      {auth === 'notConfigured' && (
+        <ErrorBox message="パスコードがまだ設定されていません。Cloudflareの「変数とシークレット」で APP_PASSCODE を設定してください。" />
       )}
-
-      <Section title="接続状態">
-        {health ? (
-          <p className="text-sm">
-            <span className="mr-2 inline-block rounded bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-800">OK</span>
-            データベース接続済み・テーブル {health.tables} 個・今日 {health.today}
-          </p>
-        ) : !error && <p className="text-sm text-stone-500">確認中…</p>}
-      </Section>
-
-      <Section title={`池（${ponds.length}池・合計 ${kg(totalCapacity)}kg）`}>
-        <div className="divide-y divide-stone-200 rounded-xl border border-stone-200 bg-white">
-          {ponds.map((p) => (
-            <div key={p.id} className="flex items-center justify-between px-3 py-2.5 text-sm">
-              <div>
-                <span className="mr-2 font-mono text-xs text-stone-500">{p.code}</span>
-                <span className="font-medium">{p.name}</span>
-              </div>
-              <div className="text-right tabular-nums">
-                <div>上限 {kg(p.capacityG)}kg</div>
-                <div className="text-xs text-stone-500">
-                  {p.count > 0 ? `${p.count.toLocaleString()}匹・${kg(p.biomassG)}kg・${p.utilizationPct}%` : '空'}
-                </div>
-              </div>
+      {auth === 'loggedOut' && <Login onSuccess={() => setAuth('loggedIn')} />}
+      {auth === 'loggedIn' && !recorder && (
+        <RecorderForm onSave={(n) => { setRecorder(n); setRecorderState(n); }} />
+      )}
+      {auth === 'loggedIn' && recorder && (
+        <>
+          {tab === 'today' && <Today onGoIntake={() => setTab('intake')} />}
+          {tab === 'intake' && <Intake onDone={() => setTab('today')} />}
+          {tab === 'status' && <Status onLogout={() => setAuth('loggedOut')} />}
+          <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-stone-200 bg-white pb-[env(safe-area-inset-bottom)]">
+            <div className="mx-auto grid max-w-xl grid-cols-3">
+              {([['today', '今日の記録'], ['intake', '導入登録'], ['status', '確認']] as const).map(([k, label]) => (
+                <button key={k} type="button" onClick={() => setTab(k)}
+                  className={`py-3.5 text-sm font-semibold ${tab === k ? 'text-[#0f3d3e]' : 'text-stone-400'}`}>
+                  {tab === k && <span className="mx-auto mb-1 block h-0.5 w-8 rounded bg-[#0f3d3e]" />}
+                  {label}
+                </button>
+              ))}
             </div>
-          ))}
-        </div>
-      </Section>
-
-      <Section title="ロット">
-        {lots.map((l) => (
-          <div key={l.id} className="rounded-xl border border-stone-200 bg-white p-3 text-sm">
-            <div className="mb-1 flex items-center justify-between">
-              <span className="font-mono font-semibold">{l.code}</span>
-              <span className="rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">
-                {l.status === 'planned' ? '導入予定' : l.status}
-              </span>
-            </div>
-            <div className="text-stone-600">{l.name}（{l.species_name}・{l.source_type}）</div>
-            <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 tabular-nums">
-              <dt className="text-stone-500">導入日</dt><dd>{l.purchase_date}</dd>
-              <dt className="text-stone-500">匹数</dt><dd>{l.purchase_count.toLocaleString()}匹</dd>
-              <dt className="text-stone-500">平均重量</dt><dd>{l.purchase_avg_g}g</dd>
-              <dt className="text-stone-500">仕入単価</dt><dd>{l.unit_price_yen}円/匹</dd>
-              <dt className="text-stone-500">仕入総額</dt><dd>{l.total_price_yen.toLocaleString()}円</dd>
-            </dl>
-          </div>
-        ))}
-      </Section>
-
-      {settings && (
-        <Section title="設定値（今日時点）">
-          <ul className="space-y-1.5 rounded-xl border border-stone-200 bg-white p-3 text-sm">
-            {settings.feedingRules.map((r, i) => (
-              <li key={`fr${i}`}>給餌率（{r.species_name}・{stageLabel[r.stage]}）：<b>{pct(r.rate_bp)}%/日</b>
-                <span className="text-xs text-stone-500"> {r.note}</span></li>
-            ))}
-            {settings.feedPrices.map((f, i) => (
-              <li key={`fp${i}`}>餌単価：<b>{f.price_per_kg_yen}円/kg</b><span className="text-xs text-stone-500"> {f.name}</span></li>
-            ))}
-            {settings.growthAssumptions.map((g, i) => (
-              <li key={`ga${i}`}>仮の成長率（{g.species_name}）：<b>{pct(g.sgr_bp)}%/日</b>
-                <span className="text-xs text-stone-500"> {g.note}</span></li>
-            ))}
-            {settings.settings.map((s) => (
-              <li key={s.key}>{s.note}：<b>{s.value}</b></li>
-            ))}
-          </ul>
-        </Section>
+          </nav>
+        </>
       )}
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Login({ onSuccess }: { onSuccess: () => void }) {
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true); setError(null);
+    try {
+      await api('/api/auth/login', { method: 'POST', body: { passcode: code } });
+      onSuccess();
+    } catch (err) { setError((err as Error).message); }
+    finally { setBusy(false); }
+  }
   return (
-    <section className="mb-5">
-      <h2 className="mb-2 text-sm font-semibold text-stone-600">{title}</h2>
-      {children}
-    </section>
+    <form onSubmit={submit} className="mt-10 space-y-4">
+      <p className="text-sm text-stone-600">パスコードを入力してください。この端末では次回から入力不要です。</p>
+      <ErrorBox message={error} />
+      <input type="password" inputMode="numeric" autoComplete="current-password" value={code}
+        onChange={(e) => setCode(e.target.value)} autoFocus
+        className="w-full rounded-lg border border-stone-300 bg-white px-4 py-3 text-center text-2xl tracking-widest" />
+      <Button type="submit" className="w-full py-3.5 text-base" disabled={busy || !code}>{busy ? '確認中…' : '入る'}</Button>
+    </form>
+  );
+}
+
+function RecorderForm({ onSave }: { onSave: (name: string) => void }) {
+  const [name, setName] = useState('');
+  return (
+    <div className="mt-10 space-y-4">
+      <p className="text-sm text-stone-600">この端末で記録する人の名前を入れてください。記録に「誰が入力したか」として残ります（後から「確認」画面で変更できます）。</p>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例：佐々木" autoFocus
+        className="w-full rounded-lg border border-stone-300 bg-white px-4 py-3 text-lg" />
+      <Button className="w-full py-3.5 text-base" disabled={!name.trim()} onClick={() => onSave(name.trim())}>はじめる</Button>
+    </div>
   );
 }
